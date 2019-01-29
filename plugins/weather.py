@@ -4,7 +4,7 @@ import zlib
 import json
 from io import BytesIO, StringIO
 
-from nonebot import on_command, CommandSession
+from nonebot import on_command, CommandSession, logger
 import requests
 from bs4 import BeautifulSoup
 import numpy as np
