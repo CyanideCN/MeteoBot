@@ -1,19 +1,39 @@
 import os
 from pathlib import Path
 from io import BytesIO
+import struct
 
 from nonebot import on_command, CommandSession, permission, Scheduler
 #from nonebot.scheduler import scheduled_job
 from nonebot.log import logger
 import requests
 import datetime
+import numpy as np
 
 from . import DataBlock_pb2
 from .plotplus import Plot
 
+PERMITUSERS = {274555447, 409762147, 958495773, 1113651421, 2822905121, 1031986505,
+               1067864739, 1306795502, 1178704631, 2801203606, 228573596,
+               236693398, 314494604, 2643669184, 1137190844, 1048082999, 2054002374,
+               1163601798}
+
+def convert_time(fx:int):
+    if fx in range(0, 10):
+        fs = '00{}'.format(fx)
+    elif fx in range(10, 100):
+        fs = '0{}'.format(fx)
+    else:
+        fs = str(fx)
+    return fs
+
+def get_id(session:CommandSession):
+    ctx = session.ctx
+    return ctx['user_id']
+
 def get_latest_run():
     now = datetime.datetime.utcnow()
-    if now.hour > 7 or now.hour < 18:
+    if now.hour >= 6 and now.hour <= 18:
         return datetime.datetime(now.year, now.month, now.day, 0)
     else:
         return datetime.datetime(now.year, now.month, now.day, 0) - datetime.timedelta(hours=12)
@@ -26,6 +46,13 @@ def recursive_create_dir(path, new_folder_list):
         except FileExistsError:
             pass
     return path
+
+def clip_data(lon, lat, data, lon_min, lon_max, lat_min, lat_max):
+    left = np.where(lon >= lon_min)[0][0]
+    right = np.where(lon <= lon_max)[0][-1]
+    down = np.where(lat >= lat_min)[0][-1]
+    up = np.where(lat <= lat_max)[0][0]
+    return data[up - 1:down + 1, left - 1:right + 1]
 
 pic_root = Path(r'D:\酷Q Pro\data\image')
 
@@ -56,13 +83,6 @@ async def download(url, path, retry=3):
         except Exception as e:
             continue
     return
-'''
-tt_pic_count = 1
-@scheduled_job('cron', hour='2-4', minute='*/6')
-async def tt_ec_auto_uploader(session:CommandSession):
-    global tt_pic_count
-    t = get_latest_run()
-'''
 
 class MDFS_Grid:
     def __init__(self, filepath):
@@ -107,68 +127,161 @@ class MDFS_Grid:
             data['Norm'] = norm_array
             data['Direction'] = corr_angle_array
         self.data = data
-    #https://www.tropicaltidbits.com/analysis/models/ecmwf/2019012900/ecmwf_T850_ea_1.png
-#http://10.116.32.66:8080/DataService?requestType=getData&directory=ECMWF_HR/PRECIPITATION_TYPE/&fileName=19012720.084
 
 async def get_mdfs(directory, filename):
     _bytearray = DataBlock_pb2.ByteArrayResult()
     url = 'http://10.116.32.66:8080/DataService?requestType=getData&directory={}&fileName={}'.format(directory, filename)
+    logger.info(url)
     req = requests.get(url)
     _bytearray.ParseFromString(req.content)
-    return MDFS_Grid(BytesIO(_bytearray.byteArray))
+    return BytesIO(_bytearray.byteArray)
 
 async def ec_t850_h500(fxhour:str):
     init_time = get_latest_run() + datetime.timedelta(hours=8)
-    fname = init_time.strftime('%y%m%d%h') + '.{}'.format(fxhour)
-    f_string = '{}_{}_EC_T850_H500.png'.format(init_time.strftime('%Y%m%d%h'), fxhour)
-    fpath = pic_root.joinpath(f_string).as_posix()
+    fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
+    f_string = '{}_{}_EC_T850_H500.png'.format(get_latest_run().strftime('%Y%m%d%H'), fxhour)
+    fpath = pic_root.joinpath('mpkit', f_string).as_posix()
     if os.path.exists(fpath):
-        return
-    t850_mdfs = await get_mdfs('ECMWF_HR/TMP/850/', fname)
-    h500_mdfs = await get_mdfs('ECMWF_HR/HGT/500/', fname)
-    t850 = t850_mdfs.data['Grid']
-    h500 = h500_mdfs.data['Grid']
+        return 'mpkit/' + f_string
+    t850_data = await get_mdfs('ECMWF_HR/TMP/850/', fname)
+    h500_data = await get_mdfs('ECMWF_HR/HGT/500/', fname)
+    try:
+        t850_mdfs = MDFS_Grid(t850_data)
+        h500_mdfs = MDFS_Grid(h500_data)
+    except Exception:
+        return None
+    t850 = t850_mdfs.data['Grid'][::-1]
+    h500 = h500_mdfs.data['Grid'][::-1] * 10
+    x, y = t850_mdfs.data['Lon'], t850_mdfs.data['Lat']
     georange = (0, 80, 50, 170)
     p = Plot()
     p.setfamily('Arial')
     p.setdpi(300)
     p.setmap(projection='lcc', georange=(10, 50, 75, 150), lat_1=30, lat_2=35, lat_0=35, lon_0=105)
-    p.setxy(georange, 0.5)
-    c = p.contourf(t, gpfcmap='temp2')
-    p.contour(h500, levels=np.arange(400, 600, 4), clabeldict={'levels':np.arange(400, 600, 4)}, color='black',
+    p.setxy((y.min(), y.max(), x.min(), x.max()), 0.25)
+    c = p.contourf(t850, gpfcmap='temp2')
+    p.contour(h500, levels=np.arange(4000, 6000, 40), clabeldict={'levels':np.arange(4000, 6000, 40)}, color='black',
               lw=0.3)
-    p.contour(h500, levels=588, color='red')
-    #p.barbs(u, v, color='black')
     p.drawcoastline()
     p.drawprovinces()
     p.colorbar(c)
-    #p.maxminnote(t, 'Tempearture', 'deg')
-    #p.gridvalue(t)
-    p.title('ECMWF 850hPa Temperature, 500hPa Geopotential Height', nasdaq=False)
-    p.timestamp(init_time.strftime('%Y%m%d%h'), int(fxhour))
+    p.title('ECMWF 850hPa Temperature, 500hPa Geopotential Height (Generated by QQbot)', nasdaq=False)
+    p.timestamp(get_latest_run().strftime('%Y%m%d%H'), int(fxhour))
     p.save(fpath)
-    return fpath
+    return 'mpkit/' + f_string
 
-@on_command('ECT850H500')
-async def on_send_ec_t850_h500(session:CommandSession):
-    fxh = session.get('fxh')
+async def ec_t2m(fxhour:str):
+    init_time = get_latest_run() + datetime.timedelta(hours=8)
+    fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
+    f_string = '{}_{}_EC_T2M.png'.format(get_latest_run().strftime('%Y%m%d%H'), fxhour)
+    fpath = pic_root.joinpath('mpkit', f_string).as_posix()
+    if os.path.exists(fpath):
+        return 'mpkit/' + f_string
+    t2m_data = await get_mdfs('ECMWF_HR/TMP_2M/', fname)
     try:
-        fx = int(fxh)
+        t2m_mdfs = MDFS_Grid(t2m_data)
+    except Exception:
+        return None
+    x, y = t2m_mdfs.data['Lon'], t2m_mdfs.data['Lat']
+    p = Plot()
+    p.setfamily('Arial')
+    p.setdpi(300)
+    p.setmap(projection='lcc', georange=(10, 50, 75, 150), lat_1=30, lat_2=35, lat_0=35, lon_0=105)
+    p.setxy((y.min(), y.max(), x.min(), x.max()), 0.125)
+    c = p.contourf(t2m_mdfs.data['Grid'][::-1], gpfcmap='tt.850t')
+    p.drawcoastline()
+    p.drawprovinces()
+    p.colorbar(c)
+    p.title('ECMWF 2m Temperature (Generated by QQbot)', nasdaq=False)
+    p.timestamp(get_latest_run().strftime('%Y%m%d%H'), int(fxhour))
+    p.save(fpath)
+    return 'mpkit/' + f_string
+
+async def ec_uv850_h500(fxhour:str):
+    init_time = get_latest_run() + datetime.timedelta(hours=8)
+    fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
+    f_string = '{}_{}_EC_UV850_H500.png'.format(get_latest_run().strftime('%Y%m%d%H'), fxhour)
+    fpath = pic_root.joinpath('mpkit', f_string).as_posix()
+    if os.path.exists(fpath):
+        return 'mpkit/' + f_string
+    h500_data = await get_mdfs('ECMWF_HR/HGT/500/', fname)
+    u850_data = await get_mdfs('ECMWF_HR/UGRD/850/', fname)
+    v850_data = await get_mdfs('ECMWF_HR/VGRD/850/', fname)
+    try:
+        h500_mdfs = MDFS_Grid(h500_data)
+        u850_mdfs = MDFS_Grid(u850_data)
+        v850_mdfs = MDFS_Grid(v850_data)
+    except Exception as e:
+        logger.warn(e)
+        return None
+    x, y = h500_mdfs.data['Lon'], h500_mdfs.data['Lat']
+    h500 = clip_data(x, y, h500_mdfs.data['Grid'], 90, 125, 17, 42)[::-1] * 10
+    u850 = clip_data(x, y, u850_mdfs.data['Grid'], 90, 125, 17, 42)[::-1] * 1.94
+    v850 = clip_data(x, y, v850_mdfs.data['Grid'], 90, 125, 17, 42)[::-1] * 1.94
+    p = Plot()
+    p.setfamily('Arial')
+    p.setdpi(300)
+    p.setmap(georange=(17, 42, 90, 125))
+    p.setxy((17, 42, 90, 125), 0.25)
+    c = p.contourf(h500, gpfcmap='geopo')
+    lvl = [4600, 4660, 4720, 4780, 4840, 4900, 4960, 5020, 5060, 5100, 5140, 5180, 5220, 5260, 5300, 5340,
+           5380, 5420, 5460, 5500, 5540, 5580, 5620, 5660, 5700, 5740, 5780, 5820, 5860, 5880, 5900, 5920,
+           5940, 5970, 6000]
+    p.contour(h500, levels=lvl, clabeldict={'levels':lvl}, color='black', lw=0.4, alpha=0.6)
+    p.barbs(u850, v850, num=20)
+    p.drawcoastline()
+    p.drawprovinces()
+    p.colorbar(c)
+    p.title('ECMWF 850hPa Wind Barbs, 500hPa Geopotential Height (Generated by QQbot)', nasdaq=False)
+    p.timestamp(get_latest_run().strftime('%Y%m%d%H'), int(fxhour))
+    p.save(fpath)
+    return 'mpkit/' + f_string
+
+async def ec_asnow(fxhour:str):
+    init_time = get_latest_run() + datetime.timedelta(hours=8)
+    fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
+    f_string = '{}_{}_EC_ASNOW.png'.format(get_latest_run().strftime('%Y%m%d%H'), fxhour)
+    fpath = pic_root.joinpath('mpkit', f_string).as_posix()
+    if os.path.exists(fpath):
+        return 'mpkit/' + f_string
+    t2m_data = await get_mdfs('ECMWF_HR/ASNOW/', fname)
+    try:
+        t2m_mdfs = MDFS_Grid(t2m_data)
+    except Exception:
+        return None
+    x, y = t2m_mdfs.data['Lon'], t2m_mdfs.data['Lat']
+    p = Plot()
+    p.setfamily('Arial')
+    p.setdpi(300)
+    p.setmap(georange=(17, 42, 90, 125))
+    p.setxy((y.min(), y.max(), x.min(), x.max()), 0.125)
+    c = p.contourf(t2m_mdfs.data['Grid'][::-1], gpfcmap='wxb.snow')
+    p.drawcoastline()
+    p.drawprovinces()
+    p.colorbar(c)
+    p.title('ECMWF Accumulated Total Precipitation (Snow) (mm) (Generated by QQbot)', nasdaq=False)
+    p.timestamp(get_latest_run().strftime('%Y%m%d%H'), int(fxhour))
+    p.save(fpath)
+    return 'mpkit/' + f_string
+
+FUNC_CONV = {'T2M':ec_t2m, 'T850H500':ec_t850_h500, 'UV850H500':ec_uv850_h500, 'ASNOW':ec_asnow}
+
+@on_command('EC')
+async def call_ec_func(session:CommandSession):
+    ids = get_id(session)
+    if ids not in PERMITUSERS:
+        await session.send('Permission denied')
+        raise PermissionError('Permission denied')
+    raw = session.ctx['raw_message'].split('EC')[1].strip()
+    command = raw.split(' ')
+    func = FUNC_CONV[command[0]]
+    try:
+        fx = int(command[1])
     except Exception as e:
         await session.send(e)
-    if fx in range(0, 10):
-        fs = '00{}'.format(fx)
-    elif fx in range(10, 100):
-        fs = '0{}'.format(fx)
+    fs = convert_time(fx)
+    fpath = await func(fs)
+    if fpath:
+        await session.send('[CQ:image,file={}]'.format(fpath))
     else:
-        fs = str(fx)
-    fpath = await ec_t850_h500(fs)
-    await session.send('[CQ:image,file={}]'.format(fpath))
-
-@on_send_ec_t850_h500.args_parser
-async def parse_ec_t850_h500(session:CommandSession):
-    stripped_arg = session.current_arg_text.strip()
-    if session.current_key:
-        session.args[session.current_key] = stripped_arg
-    elif stripped_arg:
-        session.args['fxh'] = stripped_arg
+        await session.send('当前预报时效无数据')

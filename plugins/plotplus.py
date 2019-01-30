@@ -9,7 +9,7 @@ from scipy.ndimage.filters import maximum_filter, minimum_filter
 
 #Plotplus 0.1 - 2016/2/16
 #Plotplus 0.2
-_ShapeFileDirectory = os.path.join(os.path.split(__file__)[0], 'shapefile')
+_ShapeFileDirectory = r'C:\Users\27455\source\repos\mpkit-master\shapefile'
 _ProvinceDirectory = os.path.join(_ShapeFileDirectory, 'CP/ChinaProvince')
 _CityDirectory = os.path.join(_ShapeFileDirectory, 'CHN/CHN_adm2')
 _CitySDirectory = os.path.join(_ShapeFileDirectory, 'TWN/TWN_adm2')

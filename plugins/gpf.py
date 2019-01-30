@@ -2,7 +2,7 @@ import matplotlib.colors as mclr
 import os, sys
 import numpy as np
 
-_cmapdir_ = os.path.join(os.path.split(__file__)[0], 'colormap')
+_cmapdir_ = r'C:\Users\27455\source\repos\MeteoBot\colormap'
 
 LAST_COLOR = 0
 CONTROL_COLOR = 1
