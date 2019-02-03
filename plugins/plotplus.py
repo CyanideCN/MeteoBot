@@ -34,7 +34,7 @@ class Plot:
                              marktext=5)
         self.linecolor = dict(coastline='#222222', country='#222222', province='#222222',
                               city='#222222', county='#222222', parameri='k')
-        self.mpstep = 10
+        self.mpstep = 5
 
     def setfamily(self, f):
         self.family = f
