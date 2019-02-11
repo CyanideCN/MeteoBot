@@ -8,3 +8,7 @@ async def is_vpn(session:CommandSession):
         await session.send('True')
     except TimeoutError:
         await session.send('False')
+
+@on_command('菜单', only_to_me=False)
+async def menu(session:CommandSession):
+    await session.send('[CQ:image,file=bot/menu.png]')

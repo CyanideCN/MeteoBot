@@ -1,0 +1,6 @@
+LIBRARY SI_DLL
+
+EXPORTS
+showalter_index
+lifted_index
+lifted_index_from_surface

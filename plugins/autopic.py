@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from io import BytesIO
 import struct
+from ctypes import *
 
 from nonebot import on_command, CommandSession, permission, Scheduler
 #from nonebot.scheduler import scheduled_job
@@ -13,15 +14,22 @@ import matplotlib.colors as mcolor
 import matplotlib.pyplot as plt
 import metpy.calc as mpcalc
 from metpy.units import units
-import cmaps
+from scipy import ndimage
 
 from . import DataBlock_pb2
 from .plotplus import Plot
 
-PERMITUSERS = {274555447, 409762147, 958495773, 1113651421, 2822905121, 1031986505,
-               1067864739, 1306795502, 1178704631, 2801203606, 228573596,
-               236693398, 314494604, 2643669184, 1137190844, 1048082999, 2054002374,
-               1163601798, 2036695425}
+dll = CDLL(r'C:\Users\27455\source\repos\C++\SI_DLL\x64\Release\SI_DLL.dll')
+dll.showalter_index.restype = c_double
+dll.lifted_index.restype = c_double
+
+def SI_wrapper(t850, td850, t500):
+    return dll.showalter_index(c_double(t850), c_double(td850), c_double(t500))
+
+def LI_wrapper(t850, td850, t500):
+    return dll.lifted_index(c_double(t850), c_double(td850), c_double(t500))
+
+PERMITUSERS = {274555447, 474463886, 228573596, 1287389600, 2054002374}
 
 def convert_time(fx:int):
     if fx in range(0, 10):
@@ -37,7 +45,7 @@ def get_id(session:CommandSession):
     return ctx['user_id']
 
 def parse_shell_command(command:str):
-    left_v, right_v = command.replace('-', '').split('=')
+    left_v, right_v = command[2:].split('=')
     d = dict()
     d[left_v.lower()] = eval(right_v)
     return d
@@ -46,8 +54,10 @@ def get_latest_run(offset=6):
     now = datetime.datetime.utcnow()
     if now.hour >= offset and now.hour <= (24 - offset):
         return datetime.datetime(now.year, now.month, now.day, 0)
-    else:
+    elif now.hour < offset:
         return datetime.datetime(now.year, now.month, now.day, 0) - datetime.timedelta(hours=12)
+    else:
+        return datetime.datetime(now.year, now.month, now.day, 0) + datetime.timedelta(hours=12)
 
 def recursive_create_dir(path, new_folder_list):
     for i in new_folder_list:
@@ -64,6 +74,13 @@ def clip_data(lon, lat, data, lon_min, lon_max, lat_min, lat_max):
     down = np.where(lat >= lat_min)[0][-1]
     up = np.where(lat <= lat_max)[0][0]
     return data[up:down+1, left:right+1]
+
+def clip_data_sh(lon, lat, data, lon_min, lon_max, lat_min, lat_max, x1_offset=0, x2_offset=0, x3_offset=0, x4_offset=0):
+    left = np.where(lon >= lon_min)[0][0]
+    right = np.where(lon <= lon_max)[0][-1]
+    down = np.where(lat >= lat_min)[0][0]
+    up = np.where(lat <= lat_max)[0][-1]
+    return data[down+x1_offset:up+2+x2_offset, left-1+x3_offset:right+1+x4_offset]
 
 def quick_round(number):
     return np.round_(number, decimals=4)
@@ -158,10 +175,14 @@ async def get_mdfs(directory, filename):
         logger.info(url)
         req = requests.get(url)
         _bytearray.ParseFromString(req.content)
-        f = open(base.as_posix(), 'wb')
-        f.write(_bytearray.byteArray)
-        f.close()
-        return BytesIO(_bytearray.byteArray)
+        try:
+            MDFS_Grid(BytesIO(_bytearray.byteArray))
+            f = open(base.as_posix(), 'wb')
+            f.write(_bytearray.byteArray)
+            f.close()
+            return BytesIO(_bytearray.byteArray)
+        except:
+            return None
     else:
         f = open(base.as_posix(), 'rb')
         return f
@@ -220,11 +241,18 @@ async def ec_t2m(fxhour:str, **kw):
     except Exception:
         return None
     x, y = t2m_mdfs.data['Lon'], t2m_mdfs.data['Lat']
+    lon, lat = np.meshgrid(x, y)
+    lon = clip_data(x, y, lon, georange[2], georange[3], georange[0], georange[1])[::-1]
+    lat = clip_data(x, y, lat, georange[2], georange[3], georange[0], georange[1])[::-1]
     p = Plot()
     p.setfamily('Arial')
     p.setdpi(200)
     p.setmap(georange=georange)
     p.setxy(georange, 0.125)
+    p.x = lon[0]
+    p.y = lat[:, 0]
+    p.xx = lon
+    p.yy = lat
     t2m = clip_data(x, y, t2m_mdfs.data['Grid'], georange[2], georange[3], georange[0], georange[1])[::-1]
     c = p.contourf(t2m, gpfcmap='tt.850t')
     p.gridvalue(t2m, num=25, color='black')
@@ -349,6 +377,39 @@ async def ec_r24(fxhour:str, **kw):
     p.save(fpath)
     return 'mpkit/' + f_string
 
+async def ec_r6(fxhour:str, **kw):
+    lr = get_latest_run()
+    init_time = lr + datetime.timedelta(hours=8)
+    fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
+    georange = kw.pop('georange', None)
+    if not georange:
+        georange = (17, 42, 90, 125)
+    f_string = '{}_{}_EC_R06_'.format(lr.strftime('%Y%m%d%H'), fxhour)
+    f_string += '_'.join([str(i) for i in georange]) + '.png'
+    fpath = pic_root.joinpath('mpkit', f_string).as_posix()
+    if os.path.exists(fpath):
+        return 'mpkit/' + f_string
+    t2m_data = await get_mdfs('ECMWF_HR/RAIN06/', fname)
+    try:
+        t2m_mdfs = MDFS_Grid(t2m_data)
+    except Exception:
+        return None
+    x, y = t2m_mdfs.data['Lon'], t2m_mdfs.data['Lat']
+    p = Plot()
+    p.setfamily('Arial')
+    p.setdpi(200)
+    p.setmap(georange=georange)
+    p.setxy((y.min(), y.max(), x.min(), x.max()), 0.125)
+    c = p.contourf(t2m_mdfs.data['Grid'][::-1], gpfcmap='wxb.rain')
+    p.drawcoastline()
+    p.drawprovinces()
+    p.drawparameri(lw=0)
+    p.colorbar(c)
+    p.title('ECMWF 6-Hour Precipitation (mm) (Generated by QQbot)', nasdaq=False)
+    p.timestamp(lr.strftime('%Y%m%d%H'), int(fxhour))
+    p.save(fpath)
+    return 'mpkit/' + f_string
+
 async def ec_ptype(fxhour:str, **kw):
     lr = get_latest_run()
     init_time = lr + datetime.timedelta(hours=8)
@@ -404,11 +465,15 @@ async def ec_ptype(fxhour:str, **kw):
     p.save(fpath)
     return 'mpkit/' + f_string
 
-async def ec_cape_wind(fxhour:str, **kw):
+async def ec_cape(fxhour:str, **kw):
     lr = get_latest_run()
     init_time = lr + datetime.timedelta(hours=8)
     fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
-    f_string = '{}_{}_EC_CAPE_UV.png'.format(lr.strftime('%Y%m%d%H'), fxhour)
+    georange = kw.pop('georange', None)
+    if not georange:
+        georange = (17, 42, 90, 125)
+    f_string = '{}_{}_EC_CAPE_'.format(lr.strftime('%Y%m%d%H'), fxhour)
+    f_string += '_'.join([str(i) for i in georange]) + '.png'
     fpath = pic_root.joinpath('mpkit', f_string).as_posix()
     if os.path.exists(fpath):
         return 'mpkit/' + f_string
@@ -417,9 +482,6 @@ async def ec_cape_wind(fxhour:str, **kw):
         cape_mdfs = MDFS_Grid(cape_data)
     except Exception:
         return None
-    georange = kw.pop('georange', None)
-    if not georange:
-        georange = (17, 42, 90, 125)
     #mdfs:///ECMWF_HR/UGRD_10M/
     x, y = cape_mdfs.data['Lon'], cape_mdfs.data['Lat']
     cape = clip_data(x, y, cape_mdfs.data['Grid'], georange[2], georange[3], georange[0], georange[1])[::-1]
@@ -433,13 +495,60 @@ async def ec_cape_wind(fxhour:str, **kw):
     p.drawprovinces()
     p.drawparameri(lw=0)
     p.colorbar(c)
-    p.title('ECMWF CAPE, xxx Wind Barbs (Generated by QQbot)', nasdaq=False)
+    p.title('ECMWF CAPE (Generated by QQbot)', nasdaq=False)
     p.timestamp(lr.strftime('%Y%m%d%H'), int(fxhour))
     p.save(fpath)
     return 'mpkit/' + f_string
 
-async def ec_cape_uv925_tadv500(fxhour:str, **kw):
-    pass
+async def ec_uv925_tadv500(fxhour:str, **kw):
+    lr = get_latest_run()
+    init_time = lr + datetime.timedelta(hours=8)
+    fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
+    georange = kw.pop('georange', None)
+    if not georange:
+        georange = (17, 42, 90, 125)
+    f_string = '{}_{}_EC_UV925_TADV500_'.format(lr.strftime('%Y%m%d%H'), fxhour)
+    f_string += '_'.join([str(i) for i in georange]) + '.png'
+    fpath = pic_root.joinpath('mpkit', f_string).as_posix()
+    if os.path.exists(fpath):
+        return 'mpkit/' + f_string
+    u500_data = await get_mdfs('ECMWF_HR/UGRD/850/', fname)
+    v500_data = await get_mdfs('ECMWF_HR/VGRD/850/', fname)
+    u925_data = await get_mdfs('ECMWF_HR/UGRD/925/', fname)
+    v925_data = await get_mdfs('ECMWF_HR/VGRD/925/', fname)
+    t500_data = await get_mdfs('ECMWF_HR/TMP/500/', fname)
+    try:
+        u500_mdfs = MDFS_Grid(u500_data)
+        v500_mdfs = MDFS_Grid(v500_data)
+        u925_mdfs = MDFS_Grid(u925_data)
+        v925_mdfs = MDFS_Grid(v925_data)
+        t500_mdfs = MDFS_Grid(t500_data)
+    except Exception:
+        return None
+    x, y = u500_mdfs.data['Lon'], u500_mdfs.data['Lat']
+    dx, dy = mpcalc.lat_lon_grid_deltas(x[::-1], y[::-1])
+    dy *= -1
+    adv = mpcalc.advection(t500_mdfs.data['Grid'][::-1] * units.degC, [u500_mdfs.data['Grid'][::-1] * units('m/s'),
+                           v500_mdfs.data['Grid'][::-1] * units('m/s')], (dx, dy))
+    u925 = clip_data(x, y, u925_mdfs.data['Grid'], georange[2], georange[3], georange[0], georange[1])[::-1] * 1.94
+    v925 = clip_data(x, y, v925_mdfs.data['Grid'], georange[2], georange[3], georange[0], georange[1])[::-1] * 1.94
+    tadv = clip_data(x, y, adv, georange[2], georange[3], georange[0], georange[1])
+    tadv = ndimage.gaussian_filter(tadv * 10e4, sigma=1, order=0)
+    p = Plot()
+    p.setfamily('Arial')
+    p.setdpi(200)
+    p.setmap(georange=georange)
+    p.setxy(georange, 0.25)
+    c = p.contourf(tadv, gpfcmap='ncl.tdiff')
+    p.barbs(u925, v925, num=20)
+    p.drawcoastline()
+    p.drawprovinces()
+    p.drawparameri(lw=0)
+    p.colorbar(c)
+    p.title('ECMWF 925hPa Wind Barbs, 500hPa Temperature Advection (10^-4 K/s) (Generated by QQbot)', nasdaq=False)
+    p.timestamp(lr.strftime('%Y%m%d%H'), int(fxhour))
+    p.save(fpath)
+    return 'mpkit/' + f_string
 
 def cal_tt(t850, td850, t500):
     return t850 + td850 - 2 * t500
@@ -519,19 +628,428 @@ async def ec_sweat(fxhour:str, **kw):
     p.save(fpath)
     return 'mpkit/' + f_string
 
+async def ec_kidx(fxhour:str, **kw):
+    lr = get_latest_run()
+    init_time = lr + datetime.timedelta(hours=8)
+    fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
+    georange = kw.pop('georange', None)
+    if not georange:
+        georange = (17, 42, 90, 125)
+    f_string = '{}_{}_EC_KI_'.format(lr.strftime('%Y%m%d%H'), fxhour)
+    f_string += '_'.join([str(i) for i in georange]) + '.png'
+    fpath = pic_root.joinpath('mpkit', f_string).as_posix()
+    if os.path.exists(fpath):
+        return 'mpkit/' + f_string
+    t850_data = await get_mdfs('ECMWF_HR/TMP/850/', fname)
+    t700_data = await get_mdfs('ECMWF_HR/TMP/700/', fname)
+    t500_data = await get_mdfs('ECMWF_HR/TMP/500/', fname)
+    rh850_data = await get_mdfs('ECMWF_HR/RH/850/', fname)
+    rh700_data = await get_mdfs('ECMWF_HR/RH/700/', fname)
+    try:
+        t850_mdfs = MDFS_Grid(t850_data)
+        t700_mdfs = MDFS_Grid(t700_data)
+        t500_mdfs = MDFS_Grid(t500_data)
+        rh850_mdfs = MDFS_Grid(rh850_data)
+        rh700_mdfs = MDFS_Grid(rh700_data)
+    except Exception:
+        return None
+    td850 = mpcalc.dewpoint_rh(t850_mdfs.data['Grid'] * units.degC, rh850_mdfs.data['Grid'] * units.percent).magnitude
+    td700 = mpcalc.dewpoint_rh(t700_mdfs.data['Grid'] * units.degC, rh700_mdfs.data['Grid'] * units.percent).magnitude
+    k = t850_mdfs.data['Grid'] - t500_mdfs.data['Grid'] + td850 - (t700_mdfs.data['Grid'] - td700)
+    x, y = t500_mdfs.data['Lon'], t500_mdfs.data['Lat']
+    ret = clip_data(x, y, k, georange[2], georange[3], georange[0], georange[1])[::-1]
+    p = Plot()
+    p.setfamily('Arial')
+    p.setdpi(200)
+    p.setmap(georange=georange)
+    p.setxy(georange, 0.25)
+    c = p.contourf(ret, gpfcmap='wxb.kindex')
+    p.drawcoastline()
+    p.drawprovinces()
+    p.drawparameri(lw=0)
+    p.colorbar(c)
+    p.title('ECMWF K Index (Generated by QQbot)', nasdaq=False)
+    p.timestamp(lr.strftime('%Y%m%d%H'), int(fxhour))
+    p.save(fpath)
+    return 'mpkit/' + f_string
+
+#mdfs:///ECMWF_HR/PRMSL_UNCLIPPED/
+async def ec_mslp(fxhour:str, **kw):
+    lr = get_latest_run()
+    init_time = lr + datetime.timedelta(hours=8)
+    fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
+    georange = kw.pop('georange', None)
+    if not georange:
+        georange = (17, 42, 90, 125)
+    f_string = '{}_{}_EC_MSLP_'.format(lr.strftime('%Y%m%d%H'), fxhour)
+    f_string += '_'.join([str(i) for i in georange]) + '.png'
+    fpath = pic_root.joinpath('mpkit', f_string).as_posix()
+    if os.path.exists(fpath):
+        return 'mpkit/' + f_string
+    mslp_data = await get_mdfs('ECMWF_HR/PRMSL_UNCLIPPED/', fname)
+    try:
+        mslp_mdfs = MDFS_Grid(mslp_data)
+    except Exception:
+        return None
+    #mdfs:///ECMWF_HR/UGRD_10M/
+    x, y = mslp_mdfs.data['Lon'], mslp_mdfs.data['Lat']
+    mslp = clip_data(x, y, mslp_mdfs.data['Grid'], georange[2], georange[3], georange[0], georange[1])[::-1]
+    lon, lat = np.meshgrid(x, y)
+    lon = clip_data(x, y, lon, georange[2], georange[3], georange[0], georange[1])[::-1]
+    lat = clip_data(x, y, lat, georange[2], georange[3], georange[0], georange[1])[::-1]
+    p = Plot()
+    p.setfamily('Arial')
+    p.setdpi(200)
+    p.setmap(georange=georange)
+    p.setxy(georange, 0.125)
+    p.x = lon[0]
+    p.y = lat[:, 0]
+    p.xx = lon
+    p.yy = lat
+    c = p.contourf(mslp, gpfcmap='pres')
+    p.maxminfilter(mslp, type='min', window=50, color='red')
+    p.maxminfilter(mslp, type='max', window=50)
+    #p.contour(mslp, levels=np.arange())
+    p.drawcoastline()
+    p.drawprovinces()
+    p.drawparameri(lw=0)
+    p.colorbar(c)
+    p.title('ECMWF MSLP (Generated by QQbot)', nasdaq=False)
+    p.timestamp(lr.strftime('%Y%m%d%H'), int(fxhour))
+    p.save(fpath)
+    return 'mpkit/' + f_string
+
+async def ec_thse850(fxhour:str, **kw):
+    lr = get_latest_run()
+    init_time = lr + datetime.timedelta(hours=8)
+    fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
+    georange = kw.pop('georange', None)
+    if not georange:
+        georange = (17, 42, 90, 125)
+    f_string = '{}_{}_EC_THSE_850_'.format(lr.strftime('%Y%m%d%H'), fxhour)
+    f_string += '_'.join([str(i) for i in georange]) + '.png'
+    fpath = pic_root.joinpath('mpkit', f_string).as_posix()
+    if os.path.exists(fpath):
+        return 'mpkit/' + f_string
+    rh850_data = await get_mdfs('ECMWF_HR/RH/850/', fname)
+    t850_data = await get_mdfs('ECMWF_HR/TMP/850/', fname)
+    try:
+        rh850_mdfs = MDFS_Grid(rh850_data)
+        t850_mdfs = MDFS_Grid(t850_data)
+    except Exception:
+        return None
+    x, y = rh850_mdfs.data['Lon'], rh850_mdfs.data['Lat']
+    p = 850 * np.ones(rh850_mdfs.data['Grid'].shape) * units('hPa')
+    td850 = mpcalc.dewpoint_rh(t850_mdfs.data['Grid'] * units.degC, rh850_mdfs.data['Grid'] * units.percent)
+    theta = mpcalc.equivalent_potential_temperature(p, t850_mdfs.data['Grid'] * units.degC, td850)
+    ret = clip_data(x, y, theta, georange[2], georange[3], georange[0], georange[1])[::-1]
+    lon, lat = np.meshgrid(x, y)
+    lon = clip_data(x, y, lon, georange[2], georange[3], georange[0], georange[1])[::-1]
+    lat = clip_data(x, y, lat, georange[2], georange[3], georange[0], georange[1])[::-1]
+    p = Plot()
+    p.setfamily('Arial')
+    p.setdpi(200)
+    p.setmap(georange=georange)
+    p.setxy(georange, 0.25)
+    p.x = lon[0]
+    p.y = lat[:, 0]
+    p.xx = lon
+    p.yy = lat
+    c = p.contourf(ret, gpfcmap='nmc.thse')
+    p.contour(ret, levels=np.arange(312, 356, 4), alpha=0.6)
+    p.drawcoastline()
+    p.drawprovinces()
+    p.drawparameri(lw=0)
+    p.colorbar(c)
+    p.title('ECMWF 850hPa Equivalent Potential Temperature (K) (Generated by QQbot)', nasdaq=False)
+    p.timestamp(lr.strftime('%Y%m%d%H'), int(fxhour))
+    p.save(fpath)
+    return 'mpkit/' + f_string
+
+async def ec_si(fxhour:str, **kw):
+    lr = get_latest_run()
+    init_time = lr + datetime.timedelta(hours=8)
+    fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
+    georange = kw.pop('georange', None)
+    if not georange:
+        georange = (17, 42, 90, 125)
+    f_string = '{}_{}_EC_SI_'.format(lr.strftime('%Y%m%d%H'), fxhour)
+    f_string += '_'.join([str(i) for i in georange]) + '.png'
+    fpath = pic_root.joinpath('mpkit', f_string).as_posix()
+    if os.path.exists(fpath):
+        return 'mpkit/' + f_string
+    rh850_data = await get_mdfs('ECMWF_HR/RH/850/', fname)
+    t850_data = await get_mdfs('ECMWF_HR/TMP/850/', fname)
+    t500_data = await get_mdfs('ECMWF_HR/TMP/500/', fname)
+    try:
+        rh850_mdfs = MDFS_Grid(rh850_data)
+        t850_mdfs = MDFS_Grid(t850_data)
+        t500_mdfs = MDFS_Grid(t500_data)
+    except Exception:
+        return None
+    x, y = rh850_mdfs.data['Lon'], rh850_mdfs.data['Lat']
+    td850 = mpcalc.dewpoint_rh(t850_mdfs.data['Grid'] * units.degC, rh850_mdfs.data['Grid'] * units.percent)
+    si_vfunc = np.vectorize(SI_wrapper)
+    si = si_vfunc(t850_mdfs.data['Grid'], td850.magnitude, t500_mdfs.data['Grid'])
+    ret = clip_data(x, y, si, georange[2], georange[3], georange[0], georange[1])[::-1]
+    lon, lat = np.meshgrid(x, y)
+    lon = clip_data(x, y, lon, georange[2], georange[3], georange[0], georange[1])[::-1]
+    lat = clip_data(x, y, lat, georange[2], georange[3], georange[0], georange[1])[::-1]
+    p = Plot()
+    p.setfamily('Arial')
+    p.setdpi(200)
+    p.setmap(georange=georange)
+    p.setxy(georange, 0.25)
+    p.x = lon[0]
+    p.y = lat[:, 0]
+    p.xx = lon
+    p.yy = lat
+    c = p.contourf(ret, gpfcmap='wxb.lifted')
+    #p.contour(ret, levels=np.arange(312, 356, 4), alpha=0.6)
+    p.drawcoastline()
+    p.drawprovinces()
+    p.drawparameri(lw=0)
+    p.colorbar(c)
+    p.title('ECMWF Showalter Index (Test product) (Generated by QQbot)', nasdaq=False)
+    p.timestamp(lr.strftime('%Y%m%d%H'), int(fxhour))
+    p.save(fpath)
+    return 'mpkit/' + f_string
+
+async def ec_li(fxhour:str, **kw):
+    lr = get_latest_run()
+    init_time = lr + datetime.timedelta(hours=8)
+    fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
+    georange = kw.pop('georange', None)
+    if not georange:
+        georange = (17, 42, 90, 125)
+    f_string = '{}_{}_EC_LI_'.format(lr.strftime('%Y%m%d%H'), fxhour)
+    f_string += '_'.join([str(i) for i in georange]) + '.png'
+    fpath = pic_root.joinpath('mpkit', f_string).as_posix()
+    if os.path.exists(fpath):
+        return 'mpkit/' + f_string
+    rh850_data = await get_mdfs('ECMWF_HR/RH/1000/', fname)
+    t850_data = await get_mdfs('ECMWF_HR/TMP/1000/', fname)
+    t500_data = await get_mdfs('ECMWF_HR/TMP/500/', fname)
+    try:
+        rh850_mdfs = MDFS_Grid(rh850_data)
+        t850_mdfs = MDFS_Grid(t850_data)
+        t500_mdfs = MDFS_Grid(t500_data)
+    except Exception:
+        return None
+    x, y = rh850_mdfs.data['Lon'], rh850_mdfs.data['Lat']
+    td850 = mpcalc.dewpoint_rh(t850_mdfs.data['Grid'] * units.degC, rh850_mdfs.data['Grid'] * units.percent)
+    li_vfunc = np.vectorize(LI_wrapper)
+    li = li_vfunc(t850_mdfs.data['Grid'], td850.magnitude, t500_mdfs.data['Grid'])
+    ret = clip_data(x, y, li, georange[2], georange[3], georange[0], georange[1])[::-1]
+    lon, lat = np.meshgrid(x, y)
+    lon = clip_data(x, y, lon, georange[2], georange[3], georange[0], georange[1])[::-1]
+    lat = clip_data(x, y, lat, georange[2], georange[3], georange[0], georange[1])[::-1]
+    p = Plot()
+    p.setfamily('Arial')
+    p.setdpi(200)
+    p.setmap(georange=georange)
+    p.setxy(georange, 0.25)
+    p.x = lon[0]
+    p.y = lat[:, 0]
+    p.xx = lon
+    p.yy = lat
+    c = p.contourf(ret, gpfcmap='wxb.lifted')
+    #p.contour(ret, levels=np.arange(312, 356, 4), alpha=0.6)
+    p.drawcoastline()
+    p.drawprovinces()
+    p.drawparameri(lw=0)
+    p.colorbar(c)
+    p.title('ECMWF Lifted Index (From 1000hPa) (Test product) (Generated by QQbot)', nasdaq=False)
+    p.timestamp(lr.strftime('%Y%m%d%H'), int(fxhour))
+    p.save(fpath)
+    return 'mpkit/' + f_string
+
 FUNC_CONV = {'T2M':ec_t2m, 'T850H500':ec_t850_h500, 'UV850H500':ec_uv850_h500, 'ASNOW':ec_asnow,
-             'R24':ec_r24, 'PTYPE':ec_ptype, 'CAPEUV':ec_cape_wind, 'SWEAT':ec_sweat}
+             'R24':ec_r24, 'PTYPE':ec_ptype, 'CAPE':ec_cape, 'SWEAT':ec_sweat, 'K':ec_kidx,
+             'MSLP':ec_mslp, 'R06':ec_r6, 'THSE850':ec_thse850, 'SI':ec_si, 'LI':ec_li}
 
 @on_command('EC', only_to_me=False)
 async def call_ec_func(session:CommandSession):
     ids = get_id(session)
-    #if ids not in PERMITUSERS:
-    #    await session.send('内测期间暂不支持非内测用户调用')
-    #    raise PermissionError('Permission denied')
     raw = session.ctx['raw_message'].split('EC')[1].strip()
     command = raw.split(' ')
     logger.info(command)
+    if ids not in PERMITUSERS and command[0] not in ['SI', 'LI']:
+        await session.send('此功能为付费功能，请付费后调用')
+        raise PermissionError('Permission denied')
     func = FUNC_CONV[command[0]]
+    try:
+        fx = int(command[1])
+    except Exception as e:
+        await session.send(e)
+    fs = convert_time(fx)
+    if len(command) > 2:
+        shell = parse_shell_command(command[2])
+    else:
+        shell = {}
+    try:
+        fpath = await func(fs, **shell)
+    except Exception as e:
+        import traceback
+        await session.send(traceback.format_exc())
+    if fpath:
+        await session.send('[CQ:image,file={}]'.format(fpath))
+    else:
+        await session.send('当前预报时效无数据')
+    plt.close('all')
+
+async def sh_cr(fxhour:str, **kw):
+    lr = get_latest_run()
+    init_time = lr + datetime.timedelta(hours=8)
+    fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
+    georange = kw.pop('georange', None)
+    if not georange:
+        georange = (17, 42, 90, 125)
+    f_string = '{}_{}_SHHR_CR_'.format(lr.strftime('%Y%m%d%H'), fxhour)
+    f_string += '_'.join([str(i) for i in georange]) + '.png'
+    fpath = pic_root.joinpath('mpkit', f_string).as_posix()
+    if os.path.exists(fpath):
+        return 'mpkit/' + f_string
+    t2m_data = await get_mdfs('SHANGHAI_HR/COMPOSITE_REFLECTIVITY/ENTIRE_ATMOSPHERE/', fname)
+    try:
+        t2m_mdfs = MDFS_Grid(t2m_data)
+    except Exception:
+        return None
+    x, y = t2m_mdfs.data['Lon'], t2m_mdfs.data['Lat']
+    lon, lat = np.meshgrid(x, y)
+    lon = clip_data_sh(x, y, lon, georange[2], georange[3], georange[0], georange[1])
+    lat = clip_data_sh(x, y, lat, georange[2], georange[3], georange[0], georange[1])
+    cr = clip_data_sh(x, y, t2m_mdfs.data['Grid'], georange[2], georange[3], georange[0], georange[1])
+    p = Plot()
+    p.setfamily('Arial')
+    p.setdpi(200)
+    p.setmap(georange=georange)
+    p.setxy(georange, 0.1)
+    p.x = lon[0]
+    p.y = lat[:, 0]
+    p.xx = lon
+    p.yy = lat
+    c = p.contourf(cr, gpfcmap='nmc.ref')
+    p.drawcoastline()
+    p.drawprovinces()
+    p.colorbar(c)
+    p.title('Shanghai HRES Composite Reflectivity (Generated by QQbot)', nasdaq=False)
+    p.timestamp(lr.strftime('%Y%m%d%H'), int(fxhour))
+    p.save(fpath)
+    return 'mpkit/' + f_string
+
+async def sh_sweat(fxhour:str, **kw):
+    #SWEAT=12*Td850 + 20*(TT-49) + 4*WF850 + 2*WF500 + 125*(sin(WD500-WD850)+0.2)
+    lr = get_latest_run()
+    init_time = lr + datetime.timedelta(hours=8)
+    fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
+    georange = kw.pop('georange', None)
+    if not georange:
+        georange = (17, 42, 90, 125)
+    f_string = '{}_{}_SHHR_SWEAT_'.format(lr.strftime('%Y%m%d%H'), fxhour)
+    f_string += '_'.join([str(i) for i in georange]) + '.png'
+    fpath = pic_root.joinpath('mpkit', f_string).as_posix()
+    if os.path.exists(fpath):
+        return 'mpkit/' + f_string
+    u850_data = await get_mdfs('SHANGHAI_HR/UGRD/850/', fname)
+    v850_data = await get_mdfs('SHANGHAI_HR/VGRD/850/', fname)
+    u500_data = await get_mdfs('SHANGHAI_HR/UGRD/850/', fname)
+    v500_data = await get_mdfs('SHANGHAI_HR/VGRD/850/', fname)
+    t850_data = await get_mdfs('SHANGHAI_HR/TMP/850/', fname)
+    t500_data = await get_mdfs('SHANGHAI_HR/TMP/500/', fname)
+    rh850_data = await get_mdfs('SHANGHAI_HR/RH/850/', fname)
+    try:
+        u850_mdfs = MDFS_Grid(u850_data)
+        v850_mdfs = MDFS_Grid(v850_data)
+        u500_mdfs = MDFS_Grid(u500_data)
+        v500_mdfs = MDFS_Grid(v500_data)
+        t850_mdfs = MDFS_Grid(t850_data)
+        t500_mdfs = MDFS_Grid(t500_data)
+        rh850_mdfs = MDFS_Grid(rh850_data)
+    except Exception:
+        return None
+    x, y = u850_mdfs.data['Lon'], u850_mdfs.data['Lat']
+    td850 = mpcalc.dewpoint_rh(t850_mdfs.data['Grid'] * units.degC, rh850_mdfs.data['Grid'] * units.percent).magnitude
+    sweat = c_sweat(t850_mdfs.data['Grid'], td850, t500_mdfs.data['Grid'], u850_mdfs.data['Grid'], v850_mdfs.data['Grid'],
+                    u500_mdfs.data['Grid'], v500_mdfs.data['Grid'])
+    sweat[sweat < 0] = 0
+    ret = clip_data_sh(x, y, sweat, georange[2], georange[3], georange[0], georange[1])
+    x, y = t500_mdfs.data['Lon'], t500_mdfs.data['Lat']
+    lon, lat = np.meshgrid(x, y)
+    lon = clip_data_sh(x, y, lon, georange[2], georange[3], georange[0], georange[1])
+    lat = clip_data_sh(x, y, lat, georange[2], georange[3], georange[0], georange[1])
+    p = Plot()
+    p.setfamily('Arial')
+    p.setdpi(200)
+    p.setmap(georange=georange)
+    p.setxy(georange, 0.1)
+    p.x = lon[0]
+    p.y = lat[:, 0]
+    p.xx = lon
+    p.yy = lat
+    c = p.contourf(ret, gpfcmap='sweat')
+    p.drawcoastline()
+    p.drawprovinces()
+    p.drawparameri(lw=0)
+    p.colorbar(c)
+    p.title('Shanghai HRES SWEAT Index (Generated by QQbot)', nasdaq=False)
+    p.timestamp(lr.strftime('%Y%m%d%H'), int(fxhour))
+    p.save(fpath)
+    return 'mpkit/' + f_string
+
+async def sh_r1(fxhour:str, **kw):
+    lr = get_latest_run()
+    init_time = lr + datetime.timedelta(hours=8)
+    fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
+    logger.info(kw)
+    georange = kw.pop('georange', None)
+    if not georange:
+        georange = (17, 42, 90, 125)
+    f_string = '{}_{}_SHHR_R01_'.format(lr.strftime('%Y%m%d%H'), fxhour)
+    f_string += '_'.join([str(i) for i in georange]) + '.png'
+    fpath = pic_root.joinpath('mpkit', f_string).as_posix()
+    if os.path.exists(fpath):
+        return 'mpkit/' + f_string
+    t2m_data = await get_mdfs('SHANGHAI_HR/RAIN01/', fname)
+    try:
+        t2m_mdfs = MDFS_Grid(t2m_data)
+    except Exception:
+        return None
+    x, y = t2m_mdfs.data['Lon'], t2m_mdfs.data['Lat']
+    lon, lat = np.meshgrid(x, y)
+    ret = clip_data_sh(x, y, t2m_mdfs.data['Grid'], georange[2], georange[3], georange[0], georange[1])
+    lon = clip_data_sh(x, y, lon, georange[2], georange[3], georange[0], georange[1])
+    lat = clip_data_sh(x, y, lat, georange[2], georange[3], georange[0], georange[1])
+    p = Plot()
+    p.setfamily('Arial')
+    p.setdpi(200)
+    p.setmap(georange=georange)
+    p.setxy(georange, 0.1)
+    p.x = lon[0]
+    p.y = lat[:, 0]
+    p.xx = lon
+    p.yy = lat
+    c = p.contourf(ret, gpfcmap='wxb.rain1')
+    p.drawcoastline()
+    p.drawprovinces()
+    p.drawparameri(lw=0)
+    p.colorbar(c)
+    p.title('Shanghai HRES 1-Hour Precipitation (mm) (Generated by QQbot)', nasdaq=False)
+    p.timestamp(lr.strftime('%Y%m%d%H'), int(fxhour))
+    p.save(fpath)
+    return 'mpkit/' + f_string
+
+FUNC_CONV_SH = {'CR':sh_cr, 'SWEAT':sh_sweat, 'R01':sh_r1}
+
+@on_command('SHHR', only_to_me=False)
+async def call_sh_func(session:CommandSession):
+    ids = get_id(session)
+    if ids not in PERMITUSERS:
+        await session.send('此功能为付费功能，请付费后调用')
+        raise PermissionError('Permission denied')
+    raw = session.ctx['raw_message'].split('SHHR')[1].strip()
+    command = raw.split(' ')
+    func = FUNC_CONV_SH[command[0]]
     try:
         fx = int(command[1])
     except Exception as e:
@@ -548,15 +1066,25 @@ async def call_ec_func(session:CommandSession):
         await session.send('当前预报时效无数据')
     plt.close('all')
 
-async def sh_cr(fxhour:str, **kw):
+async def eps_r24_per(fxhour:str, percentile, **kw):
+    # Convert percentile
+    #mdfs:///ECMWF_ENSEMBLE_PRODUCT/STATISTICS/0.0/RAIN24/
+    p = percentile / 100
+    if percentile == 0:
+        p = '0.0'
     lr = get_latest_run()
     init_time = lr + datetime.timedelta(hours=8)
     fname = init_time.strftime('%y%m%d%H') + '.{}'.format(fxhour)
-    f_string = '{}_{}_SHHR_CR.png'.format(lr.strftime('%Y%m%d%H'), fxhour)
+    logger.info(kw)
+    georange = kw.pop('georange', None)
+    if not georange:
+        georange = (17, 42, 90, 125)
+    f_string = '{}_{}_EPS_R01_{}_'.format(lr.strftime('%Y%m%d%H'), fxhour, percentile)
+    f_string += '_'.join([str(i) for i in georange]) + '.png'
     fpath = pic_root.joinpath('mpkit', f_string).as_posix()
     if os.path.exists(fpath):
         return 'mpkit/' + f_string
-    t2m_data = await get_mdfs('SHANGHAI_HR/COMPOSITE_REFLECTIVITY/ENTIRE_ATMOSPHERE/', fname)
+    t2m_data = await get_mdfs('ECMWF_ENSEMBLE_PRODUCT/STATISTICS/{}/RAIN24/'.format(p), fname)
     try:
         t2m_mdfs = MDFS_Grid(t2m_data)
     except Exception:
@@ -565,34 +1093,41 @@ async def sh_cr(fxhour:str, **kw):
     p = Plot()
     p.setfamily('Arial')
     p.setdpi(200)
-    p.setmap(georange=(17, 42, 90, 125))
-    p.setxy((0, 60, 70, 140), 0.1)
-    c = p.contourf(t2m_mdfs.data['Grid'][::-1], gpfcmap='nmc.ref')
+    p.setmap(georange=georange)
+    p.setxy((y.min(), y.max(), x.min(), x.max()), 0.5)
+    c = p.contourf(t2m_mdfs.data['Grid'][::-1], gpfcmap='wxb.rain')
     p.drawcoastline()
     p.drawprovinces()
+    p.drawparameri(lw=0)
     p.colorbar(c)
-    p.title('Shanghai HRES Composite Reflectivity (Generated by QQbot)', nasdaq=False)
+    p.title('EPS {}% Percentile 24-Hour Precipitation (mm) (Generated by QQbot)'.format(percentile), nasdaq=False)
     p.timestamp(lr.strftime('%Y%m%d%H'), int(fxhour))
     p.save(fpath)
     return 'mpkit/' + f_string
 
-FUNC_CONV_SH = {'CR':sh_cr}
+FUNC_CONV_EPS = {'R24':eps_r24_per}
 
-@on_command('SHHR', only_to_me=False)
-async def call_sh_func(session:CommandSession):
+@on_command('EPS', only_to_me=False)
+async def call_eps_func(session:CommandSession):
     ids = get_id(session)
-    #if ids not in PERMITUSERS:
-    #    await session.send('内测期间暂不支持非内测用户调用')
-    #    raise PermissionError('Permission denied')
-    raw = session.ctx['raw_message'].split('SHHR')[1].strip()
+    if ids not in PERMITUSERS:
+        await session.send('此功能为付费功能，请付费后调用')
+        raise PermissionError('Permission denied')
+    raw = session.ctx['raw_message'].split('EPS')[1].strip()
     command = raw.split(' ')
-    func = FUNC_CONV_SH[command[0]]
+    c0 = command[0]
+    c_group = c0.split('-')
+    func = FUNC_CONV_EPS[c_group[0]]
     try:
         fx = int(command[1])
     except Exception as e:
         await session.send(e)
     fs = convert_time(fx)
-    fpath = await func(fs)
+    if len(command) > 2:
+        shell = parse_shell_command(command[2])
+    else:
+        shell = {}
+    fpath = await func(fs, int(c_group[1]), **shell)
     if fpath:
         await session.send('[CQ:image,file={}]'.format(fpath))
     else:
