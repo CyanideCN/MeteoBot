@@ -11,7 +11,7 @@ import requests
 import pathlib
 import os
 from nonebot import on_command, CommandSession, logger
-from .autopic import get_id, PERMITUSERS
+#from .autopic import get_id, PERMITUSERS
 
 def download():
     now = datetime.datetime.now()
@@ -98,6 +98,11 @@ def lifted_index(tsfc, tdsfc, psfc, t500):
     out = mpcalc.moist_lapse(p, tlcl)
     return t500.magnitude - out[1].magnitude
 
+def delta_height(p1, p2):
+    h1 = mpcalc.pressure_to_height_std(p1)
+    h2 = mpcalc.pressure_to_height_std(p2)
+    return h2 - h1
+
 def tlogp(stid:str):
     f = download()
     date = f.name.split('\\')[-1].split('.')[0]
@@ -155,7 +160,12 @@ def tlogp(stid:str):
     gamma = 0
     ky = ((beta * ta.magnitude) - si + gamma) / (alpha + (t_i[index_p850].magnitude - td_i[index_p850].magnitude))
     if ta.magnitude < si:
-        ky = 0
+        ky = 0.
+    srh_pos, srh_neg, srh_tot = mpcalc.storm_relative_helicity(u, v, alt * units('m'), 1000 * units('m'))
+    sbcape, sbcin = mpcalc.surface_based_cape_cin(p_i, t_i, td_i)
+    shr6km = mpcalc.bulk_shear(p_i, u, v, heights=alt* units('m'), depth=6000 *units('m'))
+    wshr6km = mpcalc.wind_speed(*shr6km)
+    sigtor = mpcalc.significant_tornado(sbcape, delta_height(p_i[0], lcl_p), srh_tot, wshr6km)
     fig = plt.figure(figsize=(9, 9), dpi=200)
     skew = SkewT(fig, rotation=30)
     skew.ax.set_ylim(1050, 100)
@@ -199,6 +209,8 @@ def tlogp(stid:str):
     ax.text(-50, -90 + spacing * 12, 'T850-500: ', fontsize=10)
     ax.text(-50, -90 + spacing * 13, 'θse850-500: ', fontsize=10)
     ax.text(-50, -90 + spacing * 14, 'KY: ', fontsize=10)
+    ax.text(-50, -90 + spacing * 15, 'SRH: ', fontsize=10)
+    ax.text(-50, -90 + spacing * 16, 'STP: ', fontsize=10)
 
     ax.text(10, -90, str(np.round_(cape.magnitude, 2)), fontsize=10)
     ax.text(10, -90+spacing, str(np.round_(chi, 2)), fontsize=10)
@@ -216,11 +228,15 @@ def tlogp(stid:str):
     ax.text(10, -90+spacing * 12, str(np.round_(t_i[index_p850] - t_i[index_p500], 2).magnitude), fontsize=10)
     ax.text(10, -90+spacing * 13, str(np.round_(thetadiff.magnitude, 2)), fontsize=10)
     ax.text(10, -90+spacing * 14, str(np.round_(ky, 2)), fontsize=10)
+    ax.text(10, -90+spacing * 15, str(np.round_(srh_tot.magnitude, 2)), fontsize=10)
+    ax.text(10, -90+spacing * 16, str(np.round_(sigtor.magnitude[0], 2)), fontsize=10)
 
     ax.text(45, -90, ' J/kg', fontsize=10)
     ax.text(45, -90+spacing, ' J/kg', fontsize=10)
     ax.text(45, -90+spacing * 2, ' J/kg', fontsize=10)
     ax.text(45, -90+spacing * 3, ' mm', fontsize=10)
+    ax.text(45, -90+spacing * 4, ' °C', fontsize=10)
+    ax.text(45, -90+spacing * 5, ' °C', fontsize=10)
     ax.text(45, -90+spacing * 7, ' hPa', fontsize=10)
     ax.text(45, -90+spacing * 8, ' hPa', fontsize=10)
     ax.text(45, -90+spacing * 9, ' hPa', fontsize=10)
