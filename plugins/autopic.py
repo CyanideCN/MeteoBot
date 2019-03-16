@@ -5,7 +5,6 @@ import struct
 from ctypes import *
 
 from nonebot import on_command, CommandSession, permission, Scheduler
-#from nonebot.scheduler import scheduled_job
 from nonebot.log import logger
 import requests
 import datetime
@@ -14,12 +13,12 @@ import matplotlib.colors as mcolor
 import matplotlib.pyplot as plt
 import metpy.calc as mpcalc
 from metpy.units import units
-#from scipy import ndimage
 
 from . import DataBlock_pb2
 from .plotplus import Plot
+from .permit import get_perm_usr
 
-dll = CDLL(r'C:\Users\27455\source\repos\C++\SI_DLL\x64\Release\SI_DLL.dll')
+dll = CDLL('SI_DLL.dll')
 dll.showalter_index.restype = c_double
 dll.lifted_index.restype = c_double
 
@@ -28,9 +27,6 @@ def SI_wrapper(t850, td850, t500):
 
 def LI_wrapper(t850, td850, t500):
     return dll.lifted_index(c_double(t850), c_double(td850), c_double(t500))
-
-PERMITUSERS = {274555447, 474463886, 228573596, 1287389600, 2054002374,
-               '#1163601798', 1137190844, 314494604, 1306795502}
 
 def convert_time(fx:int):
     if fx in range(0, 10):
@@ -966,6 +962,7 @@ FUNC_CONV = {'T2M':ec_t2m, 'T850H500':ec_t850_h500, 'UV850H500':ec_uv850_h500, '
 
 @on_command('EC', only_to_me=False)
 async def call_ec_func(session:CommandSession):
+    PERMITUSERS = get_perm_usr()
     ids = get_id(session)
     raw = session.ctx['raw_message'].split('EC')[1].strip()
     command = raw.split(' ')
@@ -1139,6 +1136,7 @@ FUNC_CONV_SH = {'CR':sh_cr, 'SWEAT':sh_sweat, 'R01':sh_r1}
 
 @on_command('SHHR', only_to_me=False)
 async def call_sh_func(session:CommandSession):
+    PERMITUSERS = get_perm_usr()
     ids = get_id(session)
     if ids not in PERMITUSERS:
         await session.send('此功能为付费功能，请付费后调用')
@@ -1205,6 +1203,7 @@ FUNC_CONV_EPS = {'R24':eps_r24_per}
 
 @on_command('EPS', only_to_me=False)
 async def call_eps_func(session:CommandSession):
+    PERMITUSERS = get_perm_usr()
     ids = get_id(session)
     if ids not in PERMITUSERS:
         await session.send('此功能为付费功能，请付费后调用')
