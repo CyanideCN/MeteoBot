@@ -42,19 +42,9 @@ async def _(session:CommandSession):
 
 @on_command('露点', only_to_me=False)
 async def dewp(session:CommandSession):
-    if session.get('error'):
-        await session.send(session.get('error'))
-    temp = session.get('t')
-    rh = session.get('rh')
-    td = await mpcalc.dewpoint_rh(temp, rh)
-    await session.send(td.magnitude)
-
-@dewp.args_parser
-async def dewp_parser(session:CommandSession):
-    stripped_arg = session.current_arg_text.strip()
-    try:
-        spl_str = stripped_arg.split(' ')
-        session.args['t'] = float(spl_str[0]) * units.degC
-        session.args['rh'] = float(spl_str[1]) * units.percent
-    except Exception as e:
-        session.args['error'] = e
+    raw = session.ctx['raw_message'].split('露点')[1].strip()
+    parts = raw.split(' ')
+    temp = float(parts[0]) * units.degC
+    rh = float(parts[1]) * units.percent
+    td = mpcalc.dewpoint_rh(temp, rh)
+    await session.send(str(np.round_(td.magnitude, 2)))
