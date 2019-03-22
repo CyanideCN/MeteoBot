@@ -12,3 +12,15 @@ async def is_vpn(session:CommandSession):
 @on_command('菜单', only_to_me=False)
 async def menu(session:CommandSession):
     await session.send('[CQ:image,file=bot/menu.png]')
+
+def args_parser(args:str):
+    process = dict()
+    arg_parts = args.split('--')
+    for i in arg_parts:
+        if i:
+            if '=' in i:
+                left, right = i.split('=')
+                process[left.strip().lower()] = eval(right)
+            else:
+                process[i.strip().lower()] = True
+    return process
