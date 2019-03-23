@@ -11,19 +11,24 @@ import requests
 import pathlib
 import os
 from nonebot import on_command, CommandSession, logger
-#from .autopic import get_id, PERMITUSERS
+from .autopic import get_id
+from .permit import get_perm_usr
+from .utils import args_parser
 
-def download():
-    now = datetime.datetime.now()
-    if now.time() < datetime.time(20, 45) and now.time() > datetime.time(8, 45):
-        fp = now.strftime('%Y%m%d') + '080000.000'
-    elif now.time() > datetime.time(20, 45):
-        fp = now.strftime('%Y%m%d') + '200000.000'
+def download(reftime=None, reload=False):
+    if reftime:
+        fp = reftime.strftime('%Y%m%d%H%M%S.000')
     else:
-        fp = (now - datetime.timedelta(days=1)).strftime('%Y%m%d') + '200000.000'
+        now = datetime.datetime.now()
+        if now.time() < datetime.time(20, 45) and now.time() > datetime.time(8, 45):
+            fp = now.strftime('%Y%m%d') + '080000.000'
+        elif now.time() > datetime.time(20, 45):
+            fp = now.strftime('%Y%m%d') + '200000.000'
+        else:
+            fp = (now - datetime.timedelta(days=1)).strftime('%Y%m%d') + '200000.000'
     root = pathlib.Path(r'D:\Meteorology\MDFS\UPPER_AIR\TLOGP')
     pth = root.joinpath(fp)
-    if not os.path.exists(pth):
+    if (not os.path.exists(pth)) or reload:
         url = 'http://10.116.32.66:8080/DataService?requestType=getData&directory={}&fileName={}'.format('UPPER_AIR/TLOGP/', fp)
         logger.info(url)
         req = requests.get(url)
@@ -103,8 +108,17 @@ def delta_height(p1, p2):
     h2 = mpcalc.pressure_to_height_std(p2)
     return h2 - h1
 
-def tlogp(stid:str):
-    f = download()
+def tlogp(stid:str, **kw):
+    reftime = kw.pop('time', None)
+    if reftime:
+        rtime = datetime.datetime.strptime(str(reftime), '%Y%m%d%H')
+    else:
+        rtime = None
+    if kw.pop('reload'):
+        reload = True
+    else:
+        reload = False
+    f = download(reftime=rtime, reload=reload)
     date = f.name.split('\\')[-1].split('.')[0]
     dtime = datetime.datetime.strptime(date, '%Y%m%d%H%M%S')
     info, data = get_data_section(f, stid)
@@ -253,11 +267,16 @@ async def tk(session:CommandSession):
     ids = get_id(session)
     raw = session.ctx['raw_message'].split('SKEWT')[1].strip()
     command = raw.split(' ')
-    if ids not in PERMITUSERS:
+    if len(command) > 1:
+        args = command[1:]
+        shell = args_parser(' '.join(args))
+    else:
+        shell = {}
+    if ids not in get_perm_usr():
         await session.send('此功能为付费功能，请付费后调用')
         raise PermissionError('Permission denied')
     try:
-        fp = tlogp(command[0])
+        fp = tlogp(command[0], **shell)
     except Exception as e:
         import traceback
         await session.send(traceback.format_exc())
