@@ -3,6 +3,7 @@ import base64
 import zlib
 import json
 from io import BytesIO, StringIO
+import ast
 
 from nonebot import on_command, CommandSession, logger
 import requests
@@ -11,15 +12,21 @@ import numpy as np
 import metpy.calc as mpcalc
 from metpy.units import units
 
+from .database import DBRecord
+from .autopic import get_id
+
 @on_command('查天气', only_to_me=False)
 async def weather(session:CommandSession):
     city = session.get('city', prompt='你想查询哪个站的实况呢？')
     weather_report = await get_weather_of_city(city)
+    ids = get_id(session)
+    db = DBRecord()
+    db.weather(ids, city)
     await session.send(weather_report)
 
 async def get_weather_of_city(code):
     try:
-        code = int(code)
+        code = ast.literal_eval(code)
         req = requests.get('http://q-weather.info/weather/{}/realtime/'.format(code))
     except Exception as e:
         return str(e)
@@ -44,7 +51,7 @@ async def _(session:CommandSession):
 async def dewp(session:CommandSession):
     raw = session.ctx['raw_message'].split('露点')[1].strip()
     parts = raw.split(' ')
-    temp = float(parts[0]) * units.degC
-    rh = float(parts[1]) * units.percent
+    temp = ast.literal_eval(parts[0]) * units.degC
+    rh = ast.literal_eval(parts[1]) * units.percent
     td = mpcalc.dewpoint_rh(temp, rh)
     await session.send(str(np.round_(td.magnitude, 2)))

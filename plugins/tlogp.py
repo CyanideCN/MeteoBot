@@ -10,10 +10,12 @@ import datetime
 import requests
 import pathlib
 import os
+
 from nonebot import on_command, CommandSession, logger
 from .autopic import get_id
 from .permit import get_perm_usr
 from .utils import args_parser
+from .database import DBRecord
 
 def download(reftime=None, reload=False):
     if reftime:
@@ -114,7 +116,7 @@ def tlogp(stid:str, **kw):
         rtime = datetime.datetime.strptime(str(reftime), '%Y%m%d%H')
     else:
         rtime = None
-    if kw.pop('reload'):
+    if kw.pop('reload', None):
         reload = True
     else:
         reload = False
@@ -275,6 +277,8 @@ async def tk(session:CommandSession):
     if ids not in get_perm_usr():
         await session.send('此功能为付费功能，请付费后调用')
         raise PermissionError('Permission denied')
+    db = DBRecord()
+    db.skewt(ids, command[0])
     try:
         fp = tlogp(command[0], **shell)
     except Exception as e:
