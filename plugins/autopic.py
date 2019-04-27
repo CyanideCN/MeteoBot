@@ -1140,6 +1140,7 @@ async def cldas_t2m(data=None, **kw):
             p.yy = lat
             t2m = clip_data(x, y, data[0].data['Grid'], georange[2], georange[3], georange[0], georange[1])[::-1]
             c = p.contourf(t2m, gpfcmap='tt.850t')
+            p.contour(t2m, levels=np.arange(-100, 100, 5), clabeldict={'levels':np.arange(-100, 100, 5)}, color='black', lw=0.4, alpha=0.6)
             p.drawcoastline()
             p.drawprovinces()
             p.drawparameri(lw=0)

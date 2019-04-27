@@ -74,5 +74,18 @@ class DBRecord(object):
         self.write(uid, 'SHHR', (product, fxhour))
 
     def is_aws_exceed(self, uid):
-        uid = str(uid)
         return self.get_count(uid, 'AWS') >= 6
+
+    def blacklist(self, uid, group_id, command):
+        gid = str(group_id)
+        self.write(uid, 'bl_{}'.format(gid), command)
+
+    def get_bl_command(self, uid, group_id):
+        uid = str(uid)
+        group_id = 'bl_{}'.format(group_id)
+        if uid not in self.db:
+            return
+        user_data = self.db[uid]
+        if group_id not in user_data.keys():
+            return
+        return self.db[uid][group_id]

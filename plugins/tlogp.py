@@ -10,12 +10,18 @@ import datetime
 import requests
 import pathlib
 import os
+import pickle
 
 from nonebot import on_command, CommandSession, logger
 from .autopic import get_id
 from .permit import get_perm_usr
 from .utils import args_parser
 from .database import DBRecord
+
+with open('station_reverse.pickle', 'rb') as buf:
+    index = pickle.load(buf)
+with open('station.pickle', 'rb') as buf:
+    cor = pickle.load(buf)
 
 def download(reftime=None, reload=False):
     if reftime:
@@ -111,6 +117,14 @@ def delta_height(p1, p2):
     return h2 - h1
 
 def tlogp(stid:str, **kw):
+    if not stid.isnumeric():
+        stn = stid
+        stid = index[stid]
+    else:
+        try:
+            stn = cor[stid]
+        except KeyError:
+            stn = stid
     reftime = kw.pop('time', None)
     if reftime:
         rtime = datetime.datetime.strptime(str(reftime), '%Y%m%d%H')

@@ -4,6 +4,7 @@ import zlib
 import json
 from io import BytesIO, StringIO
 import ast
+import pickle
 
 from nonebot import on_command, CommandSession, logger
 import requests
@@ -15,21 +16,51 @@ from metpy.units import units
 from .database import DBRecord
 from .autopic import get_id
 
+with open('station_reverse.pickle', 'rb') as buf:
+    index = pickle.load(buf)
+
 @on_command('查天气', only_to_me=False)
 async def weather(session:CommandSession):
     city = session.get('city', prompt='你想查询哪个站的实况呢？')
-    weather_report = await get_weather_of_city(city)
+    if not city.isnumeric():
+        try:
+            raw = index[city]
+        except KeyError:
+            await session.send('未知站号/站名:{}'.format(city))
+    else:
+        raw = city
     ids = get_id(session)
     db = DBRecord()
-    db.weather(ids, city)
+    ctx = session.ctx
+    if ids == 1178704631:
+        if ctx['message_type'] == 'private':
+            pass
+        else:
+            group_id = ctx['group_id']
+            db.blacklist(ids, group_id, raw)
+        await session.send('Unknown error occurred')
+        raise PermissionError('Unknown error')
+    else:
+        if ctx['message_type'] != 'private':
+            group_id = ctx['group_id']
+            comm = db.get_bl_command(1178704631, group_id)
+            if comm:
+                if raw in comm['command']:
+                    await session.send('Unknown error occurred')
+                    raise PermissionError('Unknown error')
+    weather_report = await get_weather_of_city(raw)
+    db = DBRecord()
+    db.weather(ids, raw)
     await session.send(weather_report)
 
 async def get_weather_of_city(code):
+    logger.info(code)
     try:
         code = ast.literal_eval(code)
         req = requests.get('http://q-weather.info/weather/{}/realtime/'.format(code))
     except Exception as e:
-        return str(e)
+        import traceback
+        return traceback.format_exc()
     soup = BeautifulSoup(req.content)
     tds = soup.find_all('td')
     if len(tds) == 0:
