@@ -34,7 +34,7 @@ class Plot:
                              marktext=5)
         self.linecolor = dict(coastline='#222222', country='#222222', province='#222222',
                               city='#222222', county='#222222', parameri='k')
-        self.mpstep = 5
+        self.mpstep = 10
 
     def setfamily(self, f):
         self.family = f
@@ -82,7 +82,7 @@ class Plot:
                           lat_0=42.5, lon_0=40)
         elif key == 'northamerica':
             kwargs.update(projection='lcc', resolution='l',
-                          llcrnrlat=-5, urcrnrlat=45, llcrnrlon=220, urcrnrlon=360,
+                          llcrnrlat=-5, urcrnrlat=45, llcrnrlon=220, urcrnrlon=359,
                           lat_0=42.5, lon_0=260)
         elif key == 'northpolar':
             kwargs.update(projection='npaeqd', resolution='l',
@@ -235,8 +235,7 @@ class Plot:
                 clabellevels = clabeldict.pop('levels')
             else:
                 clabellevels = kwargs['levels']
-            clabeldict.update(fmt='%d', fontsize=self.fontsize['clabel'])
-            #labels = self.ax.clabel(c, clabellevels, **clabeldict)
+            merge_dict(clabeldict, {'fmt': '%d', 'fontsize': self.fontsize['clabel']})
             labels = self.ax.clabel(c, **clabeldict)
             for l in labels:
                 l.set_family(self.family)
@@ -260,7 +259,6 @@ class Plot:
                 levels = kwargs['levels']
                 step = len(levels) // 40 + 1
                 cbardict.update(ticks=levels[::step])
-            cbardict.update(size='2%', pad='1%')
             if 'extend' in kwargs:
                 cbardict.update(extend=kwargs.pop('extend'), extendfrac=0.02)
             self.colorbar(c, unit=kwargs.pop('unit', None), **cbardict)
@@ -275,6 +273,7 @@ class Plot:
         return c
 
     def colorbar(self, mappable, unit=None, **kwargs):
+        kwargs.update(size='2%', pad='1%')
         if kwargs.pop('sidebar', False):
             return self.sidebar(mappable, unit, **kwargs)
         if kwargs.pop('orientation', None) == 'horizontal':
@@ -325,9 +324,12 @@ class Plot:
             if scale is None:
                 scale = 500
             kwargs.update(scale=scale)
-            uu, nx = shiftgrid(180., u, self.nx, start=False)
-            vv, nx = shiftgrid(180., v, self.nx, start=False)
-            uproj, vproj, xx, yy = self.m.transform_vector(uu, vv, nx, self.ny, num, num,
+            if self.lonmin < 180 < self.lonmax:
+                u, nx = shiftgrid(180., u, self.nx, start=False)
+                v, nx = shiftgrid(180., v, self.nx, start=False)
+            else:
+                nx = self.nx
+            uproj, vproj, xx, yy = self.m.transform_vector(u, v, nx, self.ny, num, num,
                                                            returnxy=True)
             q = self.m.quiver(xx, yy, uproj, vproj, **kwargs)
         else:
@@ -369,7 +371,7 @@ class Plot:
         return ret
 
     def gridvalue(self, data, num=20, fmt='%d', color='b', fontsize=None,
-                  stroke=False, filter_under=None, **kwargs):
+                  stroke=False, **kwargs):
         if fontsize is None:
             fontsize = self.fontsize['gridvalue']
         if stroke:
@@ -383,13 +385,8 @@ class Plot:
         meri, para = len(self.y), len(self.x)
         for i in range(1, meri-1, step):
             for j in range(1, para-1, step):
-                if isinstance(filter_under, (int, float)):
-                    if data[i][j] > filter_under:
-                        self.ax.text(j*self.res+self.lonmin, i*self.res+self.latmin,
-                                     fmt % (data[i][j]), **kwargs)
-                else:
-                    self.ax.text(j*self.res+self.lonmin, i*self.res+self.latmin,
-                                    fmt % (data[i][j]), **kwargs)
+                self.ax.text(j*self.res+self.lonmin, i*self.res+self.latmin,
+                             fmt % (data[i][j]), **kwargs)
 
     def marktext(self, x, y, text='', mark='×', textpos='right', stroke=False, 
                  bbox=dict(), family='plotplus', markfontsize=None, **kwargs):
@@ -451,7 +448,7 @@ class Plot:
             d = data[y, x]
             if d < vmax and d > vmin and x not in (0, xmax-1) and y not in (0, ymax-1):
                 textfunc(x*res+self.lonmin, y*res+self.latmin, fmt % d, **kwargs)
-    
+
     def _get_stroke_patheffects(self):
         import matplotlib.patheffects as mpatheffects
         return [mpatheffects.Stroke(linewidth=1, foreground='w'), mpatheffects.Normal()]
@@ -538,7 +535,7 @@ class Plot:
                      fontsize=self.fontsize['mmnote'], family=self.family)
         self.ax.axis('off')
         self.fig.savefig(path, dpi=self.dpi, bbox_inches='tight', edgecolor='none',
-                         pad_inches=0.05)
+                         pad_inches=0.08)
 
 def merge_dict(a, b):
     '''Merge B into A without overwriting A'''

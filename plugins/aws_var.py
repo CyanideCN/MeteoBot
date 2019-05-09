@@ -4,7 +4,7 @@ import time
 import datetime
 import numpy as np
 import matplotlib as mpl
-mpl.rc('font', family='Arial')
+mpl.rc('font', family='Lato')
 import matplotlib.pyplot as plt
 from metpy import calc as mc
 from metpy.units import units
